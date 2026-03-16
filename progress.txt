@@ -1,0 +1,190 @@
+TDA-Risk-Sentinel Pro v2.4 — État du Développement
+====================================================
+Dernière mise à jour : 2026-03-15
+
+ÉTAT GLOBAL : ✅ COMPLET
+
+FICHIERS LIVRÉS
+---------------
+✅ tda_engine.py     v2.3  — Moteur TDA + Multi-Échelles + run_sensitivity_analysis()
+✅ backtester.py     v2.4  — Protection capital P-TSS : signal asymétrique, Pain Index, Capital Sauvé
+✅ visualizations.py v2.3  — Vortex 3D, Radar, Risk Overlay, plot_multiscale_tss()
+✅ app.py            v2.4  — Section Protection Capital : KPI table + Capital Sauvé/crise + trade log enrichi
+✅ data_pipeline.py v1.0  — ETL yfinance + GBM simulation
+✅ requirements.txt v2.1  — ripser, persim (remplace giotto-tda)
+✅ tests.json             — Tests unitaires (généré par app.py au runtime)
+✅ progress.txt           — Ce fichier
+
+DÉPENDANCES (requirements.txt)
+-------------------------------
+streamlit>=1.28.0
+yfinance>=0.2.28
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.17.0
+scikit-learn>=1.3.0
+ripser>=0.6.0       # Vietoris-Rips ultra-rapide (C++)
+persim>=0.3.0       # Wasserstein exact, distance de Bottleneck
+scipy>=1.11.0
+
+MIGRATION giotto-tda → ripser/persim (v2.1)
+--------------------------------------------
+AVANT (giotto-tda) :
+  from gtda.time_series import TakensEmbedding
+  from gtda.homology import VietorisRipsPersistence
+  → TakensEmbedding.fit_transform() → (1, T', d)
+  → VietorisRipsPersistence.fit_transform() → (1, n, 3)
+
+APRÈS (ripser + persim) :
+  from ripser import ripser
+  from persim import wasserstein as persim_wasserstein
+  → Takens manuel numpy (_takens_single) → (T', d)
+  → ripser(window)['dgms'] → [H0_arr(n,2), H1_arr(m,2)]
+  → _ripser_to_standard() → (n+m, 3) format interne
+  → persim_wasserstein(h1_a, h1_b) → W₁ exact
+
+AVANTAGES :
+  - 10-50× plus rapide (C++ Ripser vs Python gtda)
+  - W₁ exact (Hungarian matching) vs approximation 1D
+  - Aucune dépendance TensorFlow
+  - API plus simple et directe
+
+ARCHITECTURE PIPELINE
+---------------------
+Prix (Yahoo Finance / GBM)
+       ↓
+Log-rendements r_t = ln(P_t/P_{t-1})
+       ↓
+Z-score glissant (fenêtre W, sans look-ahead bias)
+       ↓
+Takens Embedding multi-actifs (d, τ) + PCA → Nuage 3D
+       ↓
+ripser() : Filtration Vietoris-Rips → H₀, H₁
+       ↓
+Seuil dynamique IQR → filtrage bruit blanc
+       ↓
+Descripteurs par fenêtre :
+  • persim_wasserstein (W₁ exact, Dₜ vs Dₜ₋₁)
+  • Amplitude H₁ max
+  • Entropie de Persistance E = -Σ pᵢ log₂ pᵢ
+       ↓
+TSS = 0.45·W₁ + 0.30·Amp + 0.25·(1-E)  [lissage EWM]
+       ↓
+Backtest : rotation SPY→GLD si TSS > θ
+KPIs : Sharpe, MaxDD, CAGR, Calmar, Lead Time
+       ↓
+Dashboard Streamlit Pro (Vortex 3D animé, Radar, Risk Overlay)
+
+TESTS UNITAIRES (lancés depuis app.py Section Expert)
+------------------------------------------------------
+1. Entropie nulle pour 1 feature unique
+2. Entropie maximale pour 2 features équiprobables (E = 1 bit)
+3. Seuil IQR > 0 sur données avec signal + bruit
+4. Wasserstein(D, D) = 0 (auto-distance nulle)
+5. Z-score moyenne ≈ 0 (propriété de standardisation)
+
+USAGE
+-----
+pip install -r requirements.txt
+streamlit run app.py
+
+MULTI-SCALE TDA — DÉTECTION PRÉDICTIVE (v2.3)
+----------------------------------------------
+OBJECTIF : Augmenter le Lead Time (anticipation krach) via divergence
+           topologique entre deux échelles de temps.
+
+ARCHITECTURE MULTI-ÉCHELLES :
+  Données → run_multiscale_pipeline(W_fast=20, W_slow=100)
+    ├─ Parallèle joblib.loky (2 workers simultanés)
+    │   ├─ Pipeline W_fast=20j : micro-instabilités (TSS_fast)
+    │   └─ Pipeline W_slow=100j : structure de fond (TSS_slow)
+    ├─ _align_tss_to_prices() → alignement DatetimeIndex commun
+    └─ compute_ptss() :
+        ├─ ΔTSS  = TSS_fast − TSS_slow ∈ [-1, 1]
+        ├─ P-TSS = norm(clip(ΔTSS, 0, ∞) × (1−TSS_slow)) ∈ [0, 1]
+        └─ EW    = ΔTSS > rolling_μ(ΔTSS) + k·rolling_σ(ΔTSS)
+
+MÉTRIQUES CLÉS :
+  • ΔTSS > 0 : fracture topologique locale (TSS_fast > TSS_slow)
+               → instabilité micro non encore propagée au niveau macro
+               → FENÊTRE D'ANTICIPATION du krach
+  • ΔTSS < 0 : convergence (détente ou stress systémique généralisé)
+  • P-TSS ↑  : fracture forte + structure globale encore stable
+               → signal prédictif le plus anticipateur
+  • Early Warning : accélération anormale de ΔTSS → alerte à court terme
+
+BACKTEST MULTI-ÉCHELLES (backtester.py) :
+  run_multiscale_backtest() → 3 stratégies comparées :
+    1. P-TSS Strategy   : déclencheur P-TSS > 0.35
+    2. ΔTSS+ Strategy   : déclencheur ΔTSS > 0.15
+    3. Combined (P-TSS + 0.5·EW) : stratégie hybride
+  compute_lead_time_multiscale() : lookback élargi à 90j (vs 60j)
+
+VISUALISATIONS (visualizations.py) :
+  plot_multiscale_tss() : 3 panneaux
+    Row 1 : TSS_fast + TSS_slow + ruban divergence (orange=fracture, bleu=convergence)
+    Row 2 : ΔTSS (zones +/-) + P-TSS (ligne rouge vive)
+    Row 3 : Early Warning (signal binaire)
+  plot_multiscale_overlay() : Prix + TSS_fast + TSS_slow + P-TSS superposés
+
+RÉSULTATS ATTENDUS :
+  - Lead Time P-TSS > Lead Time TSS classique sur crises testées
+  - P-TSS anticipe typiquement 2-8 semaines avant la rupture visible
+  - Si gain nul : corrélation forte entre les deux échelles → marché
+    sans découplage micro/macro → conditions TDA peu favorables
+  NOTE : le Lead Time dépend des données disponibles et de la période.
+         Sur simulation GBM sans structure de crise réelle, les deux
+         échelles convergent (ΔTSS ≈ 0) → gain théoriquement nul.
+
+ANALYSE DE STABILITÉ DIMENSIONNELLE (v2.2)
+------------------------------------------
+- run_sensitivity_analysis(prices, dim_range=[2,3,4,5]) dans tda_engine.py
+- joblib.Parallel(backend="loky", n_jobs=-1) → _run_single_dim() par dimension
+- Fallback séquentiel si joblib indisponible
+- Résultat : DataFrame (Dimension d | TSS Moyen | Écart-type | TSS Min | TSS Max | Temps (s) | Statut)
+- Interprétation auto : "Modèle Stable" si std inter-dim < 0.10, sinon "Instable"
+- Onglet "🔬 Stabilité Dimensionnelle" dans Section Expert (tab5)
+- Barre de progression séquentielle par dimension (Streamlit non thread-safe)
+- Graphique bar avec barres d'erreur (Écart-type) par dimension
+
+CORRECTIONS DE BUGS (v2.1 → v2.2)
+------------------------------------
+- visualizations.py : TypeError legend dupliqué dans plot_prices_risk_overlay() → clé legend déplacée dans _base_layout()
+- app.py : test Wasserstein(D,D)=0 : tolérance 1e-9 → 1e-5 (persim Hungarian matching ~1e-7)
+- app.py : syntax error "import plotly.graph_objects as go as _go" → "import plotly.graph_objects as go"
+- app.py : _time.perf_counter() → time.perf_counter() (import time standard utilisé)
+
+OPTIMISATION PROTECTION DU CAPITAL (v2.4)
+------------------------------------------
+OBJECTIF : Convertir le Lead Time P-TSS de 37j en capital effectivement protégé.
+           Cible : MaxDD < −15% (vs −37% B&H).
+
+SIGNAL ASYMÉTRIQUE (backtester.py) :
+  generate_predictive_signals() — machine à états séquentielle :
+    EXIT  : P-TSS > 0.30 (1 jour confirmation) OU (EW actif ET P-TSS > 0.15)
+    REENTRY : ΔTSS < 0.05 ET TSS_slow < 0.55 ET P-TSS < 0.20 (3 jours consécutifs)
+    NaN Guard : inhibition avant ms_result.dates_slow[0] (warm-up ~100j TSS_slow)
+
+NOUVELLES MÉTRIQUES :
+  • Pain Index = mean(|drawdown_series|) — pénalise duration + profondeur
+  • Capital Sauvé / crise = max_DD_BnH(crise) - max_DD_TDA(crise) (normalisé)
+
+TRADE LOG ENRICHI :
+  • signal_type : "P-TSS EXIT", "EW EXIT", "REENTRY"
+  • jours_avant_creux : jours avant le point bas des prix dans les 120j suivants
+  • prix_creux : prix au trough
+  • verdict : "✅ Prédictif" si ≥15j, "⚠ Réactif" sinon
+
+APP.PY (v2.4) — Nouvelle section "🛡️ Protection du Capital" :
+  • Tableau KPI : Max Drawdown · Pain Index · CAGR · Sharpe · Calmar · Lead Time · Capital Sauvé
+  • Cards "💰 Capital Sauvé par Crise" (verte/orange/rouge selon niveau de protection)
+  • Journal P-TSS coloré : direction (orange/bleu) · signal_type (rouge EW / orange P-TSS) · verdict (vert prédictif)
+  • Expander "📄 Rapport Capital Protection P-TSS"
+
+NOTES TECHNIQUES
+----------------
+- ripser attend des tableaux float64 (cast automatique dans le code)
+- H0 : le point de mort infini est remplacé par 1e6 (finite sentinel)
+- persim_wasserstein(matching=False) → scalaire W₁ uniquement
+- Fallback 1D si persim lève une exception (compatibilité garantie)
+- Analyse de sensibilité désactivée par défaut (coûteuse) → checkbox sidebar
