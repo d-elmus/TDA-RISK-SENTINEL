@@ -437,6 +437,6 @@ TDA-Risk-Sentinel/
 
 *Ripser · Persim · Multi-Scale TDA · Vietoris-Rips Filtration · Persistent Homology · Wasserstein Distance*
 
-Built with Streamlit · Claude Sonnet 4.6
+Built with Streamlit · Python 3.10+
 
 </div>
