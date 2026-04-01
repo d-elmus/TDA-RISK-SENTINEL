@@ -394,7 +394,7 @@ st.markdown("""
     </div>
   </div>
   <div style="font-family:'JetBrains Mono',monospace;font-size:0.7rem;color:#455a64;text-align:right">
-    v2.4 · Claude Sonnet 4.6<br>
+    v2.4<br>
     Multi-Échelles · P-TSS · Early Warning
   </div>
 </div>
